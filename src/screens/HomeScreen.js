@@ -2,14 +2,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
-  StyleSheet, SafeAreaView, Modal, ScrollView,
-  Share, KeyboardAvoidingView, Platform, Alert,
-  StatusBar, Keyboard,
+  StyleSheet, Modal, ScrollView,
+  Share, KeyboardAvoidingView, Alert,
+  StatusBar, Platform, Keyboard,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getDateKey, getTabInfo } from '../utils/dateUtils';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// ── Color palette ──────────────────────────────────────────────────────────────
+// ── Color palette ─────────────────────────────────────────────────────────────
 const C = {
   purple:      '#6C63FF',
   purpleLight: '#F0EEFF',
@@ -24,13 +25,9 @@ const C = {
   darkRedBg:   '#FFEBEE',
 };
 
-const TABS = [
-  { offset: -1, label: 'Yesterday' },
-  { offset:  0, label: 'Today'     },
-  { offset:  1, label: 'Tomorrow'  },
-];
+const TAB_LABELS = { '-1': 'Yesterday', '0': 'Today', '1': 'Tomorrow' };
 
-// ── Storage helpers ────────────────────────────────────────────────────────────
+// ── Storage helpers ───────────────────────────────────────────────────────────
 async function loadEntries(dateKey) {
   try {
     const raw = await AsyncStorage.getItem(`entries_v2_${dateKey}`);
@@ -44,7 +41,7 @@ async function saveEntries(dateKey, entries) {
 
 async function addEntry(dateKey, number, count) {
   const entries = await loadEntries(dateKey);
-  const id = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const id      = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const updated = [...entries, { id, number, count }];
   await saveEntries(dateKey, updated);
   return updated;
@@ -59,20 +56,30 @@ async function removeEntry(dateKey, id) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export default function HomeScreen() {
-  const [activeOffset, setActiveOffset] = useState(0);
-  const [entries, setEntries]           = useState([]);
-  const [tabTotals, setTabTotals]       = useState({});
-  const [input, setInput]               = useState('');
-  const [inputCount, setInputCount]     = useState(1);
-  const [showPreview, setShowPreview]   = useState(false);
+  const insets = useSafeAreaInsets();
 
-  const inputRef = useRef(null);
-  const dateKey  = getDateKey(activeOffset);
-  const tabInfo  = getTabInfo(activeOffset);
+  const [activeOffset,   setActiveOffset]   = useState(0);
+  const [entries,        setEntries]         = useState([]);
+  const [tabTotals,      setTabTotals]       = useState({});
+  const [input,          setInput]           = useState('');
+  const [inputCount,     setInputCount]      = useState(1);
+  const [showPreview,    setShowPreview]      = useState(false);
+  const [keyboardHeight, setKeyboardHeight]  = useState(0);
+  const [keyboardVisible,setKeyboardVisible] = useState(false);
+
+  const flatListRef = useRef(null);
+  const inputRef    = useRef(null);
+
+  const dateKey = getDateKey(activeOffset);
+  const tabInfo = getTabInfo(activeOffset);
+
+  // Past dates are read-only
+  const isReadOnly = activeOffset < 0;
 
   const total4 = entries.filter(e => e.number.length === 4).reduce((s, e) => s + e.count, 0);
   const total3 = entries.filter(e => e.number.length === 3).reduce((s, e) => s + e.count, 0);
 
+  // ── Load tab entries ────────────────────────────────────────────────────────
   const loadTab = useCallback(async () => {
     const data = await loadEntries(dateKey);
     setEntries(data);
@@ -80,17 +87,39 @@ export default function HomeScreen() {
 
   useEffect(() => { loadTab(); }, [loadTab]);
 
+  // ── Refresh totals for quick pills ─────────────────────────────────────────
   const refreshTotals = useCallback(async () => {
-    const totals = {};
-    for (const { offset } of TABS) {
+    const totals  = {};
+    const offsets = [...new Set([-1, 0, 1, activeOffset])];
+    for (const offset of offsets) {
       const d = await loadEntries(getDateKey(offset));
       totals[offset] = d.reduce((s, e) => s + e.count, 0);
     }
     setTabTotals(totals);
-  }, []);
+  }, [activeOffset]);
 
   useEffect(() => { refreshTotals(); }, [entries, refreshTotals]);
 
+  // ── Keyboard listeners ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardHeight(e.endCoordinates.height);
+        setKeyboardVisible(true);
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0);
+        setKeyboardVisible(false);
+      }
+    );
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
+
+  // ── Actions ─────────────────────────────────────────────────────────────────
   async function handleAdd() {
     const val = input.trim();
     if (!/^\d{3,4}$/.test(val)) {
@@ -121,6 +150,13 @@ export default function HomeScreen() {
     );
   }
 
+  function getTabLabel(offset) {
+    if (TAB_LABELS[String(offset)]) return TAB_LABELS[String(offset)];
+    if (offset > 0) return `+${offset} days`;
+    return `${offset} days`;
+  }
+
+  // ── Share ───────────────────────────────────────────────────────────────────
   const previewLines = [
     `${tabInfo.fullDate}   4-Digit: ${total4} | 3-Digit: ${total3}`,
     '─'.repeat(20),
@@ -134,28 +170,7 @@ export default function HomeScreen() {
     } catch {}
   }
 
-  function renderTabCard({ offset, label }) {
-    const info     = getTabInfo(offset);
-    const total    = tabTotals[offset] ?? 0;
-    const isActive = activeOffset === offset;
-    return (
-      <TouchableOpacity
-        key={offset}
-        style={[styles.tabCard, isActive && styles.tabCardActive]}
-        onPress={() => setActiveOffset(offset)}
-        activeOpacity={0.75}
-      >
-        <Text style={[styles.tabDay, isActive && styles.tabDayActive]}>
-          {info.dayName}, {info.shortDate}
-        </Text>
-        {total > 0
-          ? <Text style={styles.tabBadge}>{total} {total === 1 ? 'entry' : 'entries'}</Text>
-          : <Text style={styles.tabLabel}>{label}</Text>
-        }
-      </TouchableOpacity>
-    );
-  }
-
+  // ── Render helpers ──────────────────────────────────────────────────────────
   function renderItem({ item }) {
     const isLight = item.count > 1 && item.count < 10;
     const isDark  = item.count >= 10;
@@ -177,12 +192,15 @@ export default function HomeScreen() {
         ]}>
           <Text style={styles.countPillText}>{item.count}</Text>
         </View>
-        <TouchableOpacity
-          style={styles.removeBtn}
-          onPress={() => handleRemove(item.id, item.number)}
-        >
-          <Text style={styles.removeBtnText}>×</Text>
-        </TouchableOpacity>
+        {/* Hide remove button on past (read-only) dates */}
+        {!isReadOnly && (
+          <TouchableOpacity
+            style={styles.removeBtn}
+            onPress={() => handleRemove(item.id, item.number)}
+          >
+            <Text style={styles.removeBtnText}>×</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
@@ -216,29 +234,80 @@ export default function HomeScreen() {
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar backgroundColor={C.bg} barStyle="dark-content" />
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <StatusBar backgroundColor="transparent" translucent barStyle="dark-content" />
 
-      {/* ── Tab Cards ────────────────────────────────────────────────────── */}
-      <View style={styles.tabRow}>
-        {TABS.map(tab => renderTabCard(tab))}
+      {/* ── Date Navigator ───────────────────────────────────────────────── */}
+      <View style={styles.navigator}>
+        <TouchableOpacity
+          style={styles.navArrow}
+          onPress={() => setActiveOffset(o => o - 1)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.navArrowText}>‹</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navCenter}
+          onPress={() => setActiveOffset(0)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.navLabel}>{getTabLabel(activeOffset)}</Text>
+          <Text style={styles.navDate}>{tabInfo.dayName}, {tabInfo.shortDate}</Text>
+          {activeOffset !== 0 && (
+            <Text style={styles.navBackToday}>tap to go Today</Text>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navArrow}
+          onPress={() => setActiveOffset(o => o + 1)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.navArrowText}>›</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── Quick jump pills ─────────────────────────────────────────────── */}
+      <View style={styles.quickRow}>
+        {[-1, 0, 1].map(offset => (
+          <TouchableOpacity
+            key={offset}
+            style={[styles.quickPill, activeOffset === offset && styles.quickPillActive]}
+            onPress={() => setActiveOffset(offset)}
+            activeOpacity={0.75}
+          >
+            <Text style={[
+              styles.quickPillText,
+              activeOffset === offset && styles.quickPillTextActive,
+            ]}>
+              {TAB_LABELS[String(offset)]}
+            </Text>
+            {(tabTotals[offset] ?? 0) > 0 && <View style={styles.quickDot} />}
+          </TouchableOpacity>
+        ))}
       </View>
 
       <KeyboardAvoidingView
         style={styles.flex1}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
       >
-        {/* ── Date header ───────────────────────────────────────────────── */}
+        {/* ── Date header ─────────────────────────────────────────────────── */}
         <View style={styles.dateHeader}>
           <Text style={styles.dateText}>{tabInfo.fullDate}</Text>
-          {entries.length > 0 && (
-            <Text style={styles.totalText}>{entries.length} rows</Text>
-          )}
+          <View style={styles.dateHeaderRight}>
+            {isReadOnly && (
+              <Text style={styles.readOnlyBadge}>Read Only</Text>
+            )}
+            {entries.length > 0 && (
+              <Text style={styles.totalText}>{entries.length} rows</Text>
+            )}
+          </View>
         </View>
 
-        {/* ── Input + stepper (hidden on Yesterday) ─────────────────────── */}
-        {activeOffset !== -1 && (
+        {/* ── Input + stepper — hidden on past dates ───────────────────────── */}
+        {!isReadOnly && (
           <>
             <View style={styles.inputRow}>
               <TextInput
@@ -282,13 +351,14 @@ export default function HomeScreen() {
           </>
         )}
 
-        {/* ── Section label ─────────────────────────────────────────────── */}
+        {/* ── Section label ────────────────────────────────────────────────── */}
         {entries.length > 0 && (
           <Text style={styles.sectionLabel}>ENTRIES</Text>
         )}
 
-        {/* ── List (flex:1 so it fills remaining space and scrolls) ──────── */}
+        {/* ── List ─────────────────────────────────────────────────────────── */}
         <FlatList
+          ref={flatListRef}
           style={styles.flex1}
           data={entries}
           keyExtractor={item => item.id}
@@ -296,20 +366,34 @@ export default function HomeScreen() {
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
           onScrollBeginDrag={Keyboard.dismiss}
+          onContentSizeChange={() =>
+            flatListRef.current?.scrollToEnd({ animated: true })
+          }
+          onLayout={() =>
+            flatListRef.current?.scrollToEnd({ animated: false })
+          }
           ListEmptyComponent={
             <View style={styles.empty}>
               <Text style={styles.emptyIcon}>🔢</Text>
               <Text style={styles.emptyTitle}>No entries yet</Text>
-              <Text style={styles.emptySub}>Add a 3–4 digit number above</Text>
+              <Text style={styles.emptySub}>
+                {isReadOnly ? 'No data for this day' : 'Add a 3–4 digit number above'}
+              </Text>
             </View>
           }
         />
 
-        {/* ── Footer ────────────────────────────────────────────────────── */}
-        <View style={styles.footer}>
+        {/* ── Footer ───────────────────────────────────────────────────────── */}
+        <View style={[
+          styles.footer,
+          {
+            paddingBottom: keyboardVisible ? 8 : insets.bottom + 8,
+            marginBottom:  keyboardVisible ? keyboardHeight - insets.bottom : 0,
+          },
+        ]}>
           <TouchableOpacity
             style={styles.previewBtn}
-            onPress={() => setShowPreview(true)}
+            onPress={() => { Keyboard.dismiss(); setShowPreview(true); }}
             activeOpacity={0.85}
           >
             <Text style={styles.previewBtnText}>📋  Preview & Share</Text>
@@ -318,7 +402,7 @@ export default function HomeScreen() {
 
       </KeyboardAvoidingView>
 
-      {/* ── Preview Bottom Sheet ──────────────────────────────────────────── */}
+      {/* ── Preview Bottom Sheet ─────────────────────────────────────────── */}
       <Modal
         visible={showPreview}
         transparent
@@ -330,7 +414,7 @@ export default function HomeScreen() {
           activeOpacity={1}
           onPress={() => setShowPreview(false)}
         />
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: insets.bottom + 20 }]}>
           <View style={styles.handle} />
           <Text style={styles.sheetTitle}>Preview</Text>
 
@@ -375,95 +459,148 @@ export default function HomeScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  flex1: { flex: 1 },
+  flex1:     { flex: 1 },
   container: { flex: 1, backgroundColor: C.bg },
 
-  tabRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingTop: 14,
-    paddingBottom: 8,
-    gap: 8,
+  // ── Navigator ───────────────────────────────────────────────────────────────
+  navigator: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    marginHorizontal: 12,
+    marginTop:        14,
+    marginBottom:     6,
+    backgroundColor:  C.card,
+    borderRadius:     14,
+    borderWidth:      1.5,
+    borderColor:      C.border,
+    overflow:         'hidden',    
   },
-  tabCard: {
-    flex: 1,
-    backgroundColor: C.card,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderWidth: 1.5,
-    borderColor: C.border,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 3,
-    minHeight: 58,
-    justifyContent: 'center',
-  },
-  tabCardActive: {
-    borderColor: C.purple,
+  navArrow: {
+    width:           48,
+    alignItems:      'center',
+    justifyContent:  'center',
+    paddingVertical: 22,
     backgroundColor: C.purpleLight,
-    elevation: 4,
-    shadowOpacity: 0.14,
-    shadowColor: C.purple,
-    shadowRadius: 6,
   },
-  tabDay:       { fontSize: 11, fontWeight: '700', color: C.text, marginBottom: 3 },
-  tabDayActive: { color: C.purple },
-  tabBadge:     { fontSize: 10, color: C.medRed, fontWeight: '700' },
-  tabLabel:     { fontSize: 10, color: C.muted,  fontWeight: '500' },
-
-  dateHeader: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    paddingHorizontal: 16,
+  navArrowText: {
+    fontSize:   28,
+    color:      C.purple,
+    fontWeight: '300',
+    lineHeight: 30,
+  },
+  navCenter: {
+    flex:            1,
+    alignItems:      'center',
     paddingVertical: 10,
   },
-  dateText:  { fontSize: 20, fontWeight: '800', color: C.text, flex: 1 },
-  totalText: { fontSize: 13, color: C.muted, fontWeight: '500' },
+  navLabel: {
+    fontSize:   15,
+    fontWeight: '800',
+    color:      C.text,
+  },
+  navDate: {
+    fontSize:  12,
+    color:     C.muted,
+    marginTop: 2,
+  },
+  navBackToday: {
+    fontSize:   10,
+    color:      C.purple,
+    marginTop:  3,
+    fontWeight: '600',
+  },
 
+  // ── Quick pills ─────────────────────────────────────────────────────────────
+  quickRow: {
+    flexDirection:    'row',
+    marginHorizontal: 12,
+    marginBottom:     8,
+    gap:              8,
+  },
+  quickPill: {
+    flex:            1,
+    paddingVertical: 7,
+    borderRadius:    10,
+    alignItems:      'center',
+    backgroundColor: C.card,
+    borderWidth:     1.5,
+    borderColor:     C.border,
+    flexDirection:   'row',
+    justifyContent:  'center',
+    gap:             4,
+  },
+  quickPillActive:     { backgroundColor: C.purpleLight, borderColor: C.purple },
+  quickPillText:       { fontSize: 12, fontWeight: '600', color: C.muted },
+  quickPillTextActive: { color: C.purple },
+  quickDot: {
+    width:        6,
+    height:       6,
+    borderRadius: 3,
+    backgroundColor: C.medRed,
+  },
+
+  // ── Date header ─────────────────────────────────────────────────────────────
+  dateHeader: {
+    flexDirection:    'row',
+    alignItems:       'baseline',
+    paddingHorizontal: 16,
+    paddingVertical:  10,
+  },
+  dateText:       { fontSize: 20, fontWeight: '800', color: C.text, flex: 1 },
+  dateHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  totalText:      { fontSize: 13, color: C.muted, fontWeight: '500' },
+  readOnlyBadge: {
+    fontSize:        10,
+    color:           C.muted,
+    fontWeight:      '700',
+    backgroundColor: C.border,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius:    6,
+    letterSpacing:   0.5,
+  },
+
+  // ── Input ───────────────────────────────────────────────────────────────────
   inputRow: {
-    flexDirection: 'row',
+    flexDirection:    'row',
     marginHorizontal: 16,
-    marginBottom: 10,
-    gap: 10,
-    alignItems: 'center',
+    marginBottom:     10,
+    gap:              10,
+    alignItems:       'center',
   },
   input: {
-    flex: 1,
-    backgroundColor: C.card,
-    borderWidth: 1.5,
-    borderColor: C.border,
-    borderRadius: 12,
+    flex:             1,
+    backgroundColor:  C.card,
+    borderWidth:      1.5,
+    borderColor:      C.border,
+    borderRadius:     12,
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 17,
-    color: C.text,
-    letterSpacing: 1.5,
+    paddingVertical:  14,
+    fontSize:         17,
+    color:            C.text,
+    letterSpacing:    1.5,
   },
-
   stepper: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection:   'row',
+    alignItems:      'center',
     backgroundColor: C.card,
-    borderWidth: 1.5,
-    borderColor: C.border,
-    borderRadius: 12,
-    overflow: 'hidden',
-    height: 52,
+    borderWidth:     1.5,
+    borderColor:     C.border,
+    borderRadius:    12,
+    overflow:        'hidden',
+    height:          52,
   },
   stepBtn: {
-    width: 36,
-    height: 52,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width:           36,
+    height:          52,
+    justifyContent:  'center',
+    alignItems:      'center',
     backgroundColor: C.purpleLight,
   },
   stepBtnText: { fontSize: 20, color: C.purple, fontWeight: '700', lineHeight: 24 },
@@ -471,122 +608,126 @@ const styles = StyleSheet.create({
 
   addBtn: {
     marginHorizontal: 16,
-    backgroundColor: C.purple,
-    borderRadius: 12,
-    paddingVertical: 15,
-    alignItems: 'center',
-    marginBottom: 14,
-    opacity: 0.7,
-    elevation: 2,
-    shadowColor: C.purple,
-    shadowOpacity: 0.3,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 6,
+    backgroundColor:  C.purple,
+    borderRadius:     12,
+    paddingVertical:  15,
+    alignItems:       'center',
+    marginBottom:     14,
+    opacity:          0.7,
+    elevation:        2,
+    shadowColor:      C.purple,
+    shadowOpacity:    0.3,
+    shadowOffset:     { width: 0, height: 3 },
+    shadowRadius:     6,
   },
   addBtnReady: { opacity: 1, elevation: 5, shadowOpacity: 0.5 },
   addBtnText:  { color: '#fff', fontSize: 15, fontWeight: '800', letterSpacing: 2 },
 
+  // ── List ────────────────────────────────────────────────────────────────────
   sectionLabel: {
-    fontSize: 11,
-    color: C.muted,
-    fontWeight: '700',
-    letterSpacing: 1,
+    fontSize:         11,
+    color:            C.muted,
+    fontWeight:       '700',
+    letterSpacing:    1,
     paddingHorizontal: 16,
-    marginBottom: 6,
+    marginBottom:     6,
   },
-
   listContent: { paddingHorizontal: 16, paddingBottom: 12 },
   listRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection:   'row',
+    alignItems:      'center',
     backgroundColor: C.card,
-    borderRadius: 12,
+    borderRadius:    12,
     paddingHorizontal: 14,
     paddingVertical: 13,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: C.border,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOpacity: 0.03,
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 2,
+    marginBottom:    8,
+    borderWidth:     1,
+    borderColor:     C.border,
+    elevation:       1,
+    shadowColor:     '#000',
+    shadowOpacity:   0.03,
+    shadowOffset:    { width: 0, height: 1 },
+    shadowRadius:    2,
   },
   listNum:  { flex: 1, fontSize: 22, fontWeight: '700', color: C.text, letterSpacing: 1.5 },
   listDash: { fontSize: 16, color: C.muted, marginHorizontal: 8 },
   countPill: {
-    minWidth: 34,
-    height: 34,
-    borderRadius: 17,
+    minWidth:       34,
+    height:         34,
+    borderRadius:   17,
     justifyContent: 'center',
-    alignItems: 'center',
+    alignItems:     'center',
     paddingHorizontal: 10,
   },
   countPillText: { color: '#fff', fontSize: 14, fontWeight: '800' },
   removeBtn: {
-    marginLeft: 10,
-    width: 30, height: 30,
-    borderRadius: 15,
+    marginLeft:     10,
+    width:          30,
+    height:         30,
+    borderRadius:   15,
     backgroundColor: '#ECECF4',
     justifyContent: 'center',
-    alignItems: 'center',
+    alignItems:     'center',
   },
   removeBtnText: { fontSize: 18, color: C.muted, lineHeight: 22, marginTop: -1 },
 
-  empty: { alignItems: 'center', paddingTop: 50, paddingBottom: 20 },
+  // ── Empty ───────────────────────────────────────────────────────────────────
+  empty:      { alignItems: 'center', paddingTop: 50, paddingBottom: 20 },
   emptyIcon:  { fontSize: 44, marginBottom: 12 },
   emptyTitle: { fontSize: 16, fontWeight: '700', color: C.muted },
   emptySub:   { fontSize: 13, color: C.muted, marginTop: 5 },
 
+  // ── Footer ──────────────────────────────────────────────────────────────────
   footer: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: C.border,
-    backgroundColor: C.bg,
+    paddingTop:        12,
+    borderTopWidth:    1,
+    borderTopColor:    C.border,
+    backgroundColor:   C.bg,
   },
   previewBtn: {
     backgroundColor: C.text,
-    borderRadius: 12,
+    borderRadius:    12,
     paddingVertical: 15,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
+    alignItems:      'center',
+    elevation:       2,
+    shadowColor:     '#000',
+    shadowOpacity:   0.2,
+    shadowOffset:    { width: 0, height: 2 },
+    shadowRadius:    4,
   },
   previewBtnText: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.3 },
 
+  // ── Modal sheet ─────────────────────────────────────────────────────────────
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' },
   sheet: {
-    backgroundColor: '#fff',
+    backgroundColor:     '#fff',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 36,
-    maxHeight: '82%',
+    paddingHorizontal:   20,
+    paddingTop:          12,
+    maxHeight:           '82%',
   },
   handle: {
-    width: 40, height: 4,
-    borderRadius: 2,
+    width:           40,
+    height:          4,
+    borderRadius:    2,
     backgroundColor: '#DDD',
-    alignSelf: 'center',
-    marginBottom: 16,
+    alignSelf:       'center',
+    marginBottom:    16,
   },
   sheetTitle:  { fontSize: 21, fontWeight: '800', color: C.text, marginBottom: 12 },
   sheetScroll: { maxHeight: 400 },
 
   previewDate: { fontSize: 16, fontWeight: '700', color: C.text, marginBottom: 10 },
   digitTotalsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: C.purpleLight,
-    borderRadius: 10,
-    paddingVertical: 10,
+    flexDirection:    'row',
+    alignItems:       'center',
+    backgroundColor:  C.purpleLight,
+    borderRadius:     10,
+    paddingVertical:  10,
     paddingHorizontal: 16,
-    marginBottom: 12,
+    marginBottom:     12,
   },
   digitBadge:      { flex: 1, alignItems: 'center' },
   digitBadgeLabel: { fontSize: 11, color: C.purple, fontWeight: '600', letterSpacing: 0.5 },
@@ -597,11 +738,11 @@ const styles = StyleSheet.create({
   previewEmpty:   { color: C.muted, textAlign: 'center', paddingVertical: 20, fontSize: 14 },
   previewRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems:    'center',
     paddingVertical: 9,
     paddingHorizontal: 8,
-    borderRadius: 8,
-    marginBottom: 4,
+    borderRadius:  8,
+    marginBottom:  4,
   },
   previewNum:   { flex: 1, fontSize: 18, fontWeight: '700', color: C.text, letterSpacing: 1 },
   previewSep:   { fontSize: 15, color: C.muted, marginHorizontal: 8 },
@@ -609,34 +750,34 @@ const styles = StyleSheet.create({
 
   legend: {
     flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    marginTop: 14,
-    gap: 6,
+    alignItems:    'center',
+    flexWrap:      'wrap',
+    marginTop:     14,
+    gap:           6,
   },
   legendDot:  { width: 12, height: 12, borderRadius: 3 },
   legendText: { fontSize: 11, color: C.muted, marginRight: 10 },
 
   sheetActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
   shareBtn: {
-    flex: 1,
+    flex:            1,
     backgroundColor: C.purple,
-    borderRadius: 12,
+    borderRadius:    12,
     paddingVertical: 15,
-    alignItems: 'center',
-    elevation: 3,
-    shadowColor: C.purple,
-    shadowOpacity: 0.4,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 6,
+    alignItems:      'center',
+    elevation:       3,
+    shadowColor:     C.purple,
+    shadowOpacity:   0.4,
+    shadowOffset:    { width: 0, height: 3 },
+    shadowRadius:    6,
   },
   shareBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   closeBtn: {
-    flex: 1,
+    flex:            1,
     backgroundColor: '#ECECF4',
-    borderRadius: 12,
+    borderRadius:    12,
     paddingVertical: 15,
-    alignItems: 'center',
+    alignItems:      'center',
   },
   closeBtnText: { color: C.text, fontSize: 16, fontWeight: '600' },
 });

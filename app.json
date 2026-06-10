@@ -2,6 +2,7 @@
   "expo": {
     "name": "Counter Numbers",
     "slug": "counter-numbers",
+    "icon": "./assets/icon.png",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -15,7 +16,9 @@
       "package": "com.counternumbers.app",
       "softwareKeyboardLayoutMode": "pan"
     },
-    "plugins": [],
+    "plugins": [
+      "expo-asset"
+    ],
     "extra": {
       "eas": {
         "projectId": "6ded17f0-e106-4ff6-bd0b-87f16083dd0e"

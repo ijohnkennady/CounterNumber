@@ -61,6 +61,9 @@ npm install -g eas-cli
 eas login
 
 # Configure build
+
+npx -y expo-doctor
+
 eas build:configure
 
 # Build APK for Android
@@ -109,8 +112,11 @@ CounterNumbers/
 
 
 
-Step 3 — Clean reinstall:
-bashrd /s /q node_modules
-del package-lock.json
-npm install
-npx expo start --clear
+## Step 3 — Clean reinstall:
+- rd /s /q node_modules
+- del package-lock.json
+- npm install
+- npx expo start --clear
+
+- npm install expo@~54.0.0
+- npx expo install --fix

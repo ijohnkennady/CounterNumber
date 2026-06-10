@@ -1,0 +1,5 @@
+<application
+  android:allowBackup="true"
+  android:fullBackupContent="true"
+  android:windowSoftInputMode="adjustResize"
+  ...>

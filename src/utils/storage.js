@@ -1,73 +1,58 @@
-// ─── Persistent Storage via AsyncStorage ──────────────────────────────────────
-// Data shape: { "2026-06-10": ["452", "452", "356"], "2026-06-09": [...], ... }
-
+// src/utils/storage.js
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const STORAGE_KEY = '@counter_numbers_v1';
+const PREFIX = 'entries_v2_';
 
-/** Load the entire data object from storage. */
-async function loadAll() {
+// ── CRUD ──────────────────────────────────────────────────────────────────────
+
+export async function loadEntries(dateKey) {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+    const raw = await AsyncStorage.getItem(`${PREFIX}${dateKey}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
 }
 
-/** Persist the entire data object. */
-async function saveAll(data) {
+export async function saveEntries(dateKey, entries) {
+  await AsyncStorage.setItem(`${PREFIX}${dateKey}`, JSON.stringify(entries));
+}
+
+export async function addEntry(dateKey, number, count) {
+  const entries = await loadEntries(dateKey);
+  const id      = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const updated = [...entries, { id, number, count }];
+  await saveEntries(dateKey, updated);
+  return updated;
+}
+
+export async function removeEntry(dateKey, id) {
+  const entries = await loadEntries(dateKey);
+  const updated = entries.filter(e => e.id !== id);
+  await saveEntries(dateKey, updated);
+  return updated;
+}
+
+// ── Auto-delete entries older than 30 days ────────────────────────────────────
+
+export async function purgeOldEntries() {
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch (e) {
-    console.warn('Storage save error:', e);
-  }
-}
+    const keys    = await AsyncStorage.getAllKeys();
+    const appKeys = keys.filter(k => k.startsWith(PREFIX));
 
-/** Return the raw array of entries for a given dateKey. */
-export async function getEntries(dateKey) {
-  const data = await loadAll();
-  return data[dateKey] || [];
-}
+    const cutoff  = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+    cutoff.setHours(0, 0, 0, 0);
 
-/** Append a number string to a date's entries. Returns the updated array. */
-export async function addEntry(dateKey, num) {
-  const data = await loadAll();
-  if (!data[dateKey]) data[dateKey] = [];
-  data[dateKey].push(num);
-  await saveAll(data);
-  return data[dateKey];
-}
+    const toDelete = appKeys.filter(key => {
+      const dateStr = key.replace(PREFIX, ''); // → YYYY-MM-DD
+      const date    = new Date(dateStr);
+      return date < cutoff;
+    });
 
-/**
- * Remove one occurrence of `num` from a date (removes the last occurrence).
- * Returns the updated array.
- */
-export async function removeOneEntry(dateKey, num) {
-  const data = await loadAll();
-  if (!data[dateKey]) return [];
-  // Remove last occurrence
-  const arr = [...data[dateKey]];
-  const idx = arr.lastIndexOf(num);
-  if (idx !== -1) arr.splice(idx, 1);
-  data[dateKey] = arr;
-  await saveAll(data);
-  return arr;
-}
-
-/**
- * Group a raw entries array into [{number, count}] in first-seen order.
- * e.g. ["452","452","356","123"] → [{number:"452",count:2},{number:"356",count:1},...]
- */
-export function groupCounts(entries) {
-  const seen = Object.create(null);
-  const order = [];
-  for (const num of entries) {
-    if (seen[num] === undefined) {
-      seen[num] = 0;
-      order.push(num);
+    if (toDelete.length > 0) {
+      await AsyncStorage.multiRemove(toDelete);
+      console.log(`🗑️ Auto-deleted ${toDelete.length} old entries:`, toDelete);
     }
-    seen[num]++;
+  } catch (e) {
+    console.warn('purgeOldEntries error:', e);
   }
-  return order.map(num => ({ number: num, count: seen[num] }));
 }
