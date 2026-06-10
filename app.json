@@ -10,8 +10,9 @@
       "backgroundColor": "#6C63FF"
     },
     "android": {
+      "package": "com.counternumbers.app",
       "adaptiveIcon": {
-        "backgroundColor": "#6C63FF"
+        "backgroundColor": "#6C63FF"        
       },
       "package": "com.counternumbers.app",
       "softwareKeyboardLayoutMode": "pan"
