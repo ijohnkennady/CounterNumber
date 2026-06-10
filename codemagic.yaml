@@ -3,7 +3,7 @@ workflows:
     name: CounterNumbers Android Build
     max_build_duration: 60
     environment:
-      node: 18.19.0
+      node: 20.11.0        # ← change 18.19.0 to 20.11.0
       java: 17
     scripts:
       - name: Install dependencies
